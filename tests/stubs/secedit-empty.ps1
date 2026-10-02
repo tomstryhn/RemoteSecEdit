@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 .GUID 9fa1fa26-aa3c-433c-adf8-4fa8baf71c9b
 .AUTHOR Tom Stryhn
 .COMPANYNAME Tom Stryhn

@@ -2,7 +2,7 @@
 
 .DESCRIPTION Returns the collecting computer's own ComputerId, or null on failure
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID 77cc8a38-ac3c-4cbc-9290-72812398c432
 

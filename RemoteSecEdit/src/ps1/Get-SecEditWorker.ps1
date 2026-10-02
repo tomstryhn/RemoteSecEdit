@@ -2,7 +2,7 @@
 
 .DESCRIPTION Returns the self-contained scriptblock that runs secedit /export on a target
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID f1f19af1-990c-40a0-96f6-674cbd3f5980
 
@@ -27,13 +27,24 @@ function Get-SecEditWorker {
     .DESCRIPTION
         The scriptblock this function returns is what actually runs on the target, local or
         remote, so it uses no module function, no module variable and no using: expression. It
-        takes a single -SecEditPath parameter and depends on nothing else from the caller's
-        session. It runs secedit /export twice, once plain and once with /mergedpolicy, validates
-        the files it wrote, resolves every account referenced in [Privilege Rights] across both
-        exports, and returns one flat object describing the target, both exports and the account
-        table. It never throws: every step is wrapped in its own try/catch and appends to an
-        Errors list instead. Invoke-SecEditLocal calls it directly for the local computer.
+        takes two parameters, -SkipSidReference (first, because the remote call passes it
+        positionally) and -SecEditPath, and depends on nothing else from the caller's session. It
+        runs secedit /export twice, once plain and once with /mergedpolicy, validates the files it
+        wrote, resolves every account referenced in [Privilege Rights] across both exports, and
+        returns one flat object describing the target, both exports and the account table. It
+        never throws: every step is wrapped in its own try/catch and appends to an Errors list
+        instead. Invoke-SecEditLocal calls it directly for the local computer.
         Invoke-SecEditRemote passes it to Invoke-Command for every remote target.
+
+        Besides the computer identity it reads four SID reference values: MachineSid (the local
+        account with RID 500 through Win32_UserAccount, filtered on the computer's own name, with
+        the RID removed; null on a domain controller), and DomainSid, ComputerAccountSid and
+        DomainNetbiosName (the computer's own domain account through an NTAccount to
+        SecurityIdentifier translation, only on a domain-joined computer; null on a workgroup
+        computer). No Active Directory module and no LDAP is used. -SkipSidReference is a bool,
+        not a switch, because Invoke-Command passes it positionally; $true leaves the four values
+        null and reads nothing for them. It defaults to $false for tests, and every real caller
+        passes it explicitly. -SecEditPath defaults to secedit.exe in the system folder.
 
     .NOTES
         FUNCTION: Get-SecEditWorker
@@ -51,7 +62,9 @@ function Get-SecEditWorker {
 
     return {
         param(
-            [string]$SecEditPath = (Join-Path -Path ([Environment]::GetFolderPath('System')) -ChildPath 'secedit.exe')
+            [bool]$SkipSidReference = $false,
+
+            [string]$SecEditPath =(Join-Path -Path ([Environment]::GetFolderPath('System')) -ChildPath 'secedit.exe')
         )
 
         # Off here, not only in the public function, so the worker behaves the same in-process as on a remote target, where strict mode is off by default.
@@ -227,6 +240,51 @@ function Get-SecEditWorker {
             $machineGuid = [string](Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid
         }
         catch { $errors += "identity: MachineGuid: $($_.Exception.Message)" }
+        #endregion
+
+        #region SID reference
+        # Four reference values that say whose an S-1-5-21 SID is; none is used as identity. MachineSid is the SID of the computer's own account database: the built-in Administrator (RID 500, whatever its name or state) without the RID. The filter names the computer as the domain, so only the local accounts are read; a domain controller has no such row and keeps null with no error. The domain values come from the computer's own account and are read only on a domain-joined computer. -SkipSidReference leaves all four null with no error.
+        $machineSid = $null
+        $domainSid = $null
+        $computerAccountSid = $null
+        $domainNetbiosName = $null
+        if (-not $SkipSidReference) {
+            try {
+                $localAccounts = @(Get-CimInstance -ClassName Win32_UserAccount -Filter ('Domain = "{0}"' -f $env:COMPUTERNAME) -ErrorAction Stop -Verbose:$false)
+                foreach ($localAccount in $localAccounts) {
+                    if ([string]$localAccount.SID -match '^(S-1-5-21-\d+-\d+-\d+)-500$') {
+                        $machineSid = $matches[1]
+                        break
+                    }
+                }
+            }
+            catch { $errors += "identity: MachineSid: $($_.Exception.Message)" }
+
+            if ($partOfDomain) {
+                $computerAccountSidObject = $null
+                try {
+                    $computerAccount = New-Object System.Security.Principal.NTAccount(($domain + '\' + $env:COMPUTERNAME + '$'))
+                    $computerAccountSidObject = $computerAccount.Translate([System.Security.Principal.SecurityIdentifier])
+                    $computerAccountSid = $computerAccountSidObject.Value
+                    $domainSid = $computerAccountSidObject.AccountDomainSid.Value
+                }
+                catch {
+                    $computerAccountSidObject = $null
+                    $computerAccountSid = $null
+                    $domainSid = $null
+                    $errors += "identity: DomainSid: $($_.Exception.GetBaseException().Message)"
+                }
+
+                if ($null -ne $computerAccountSidObject) {
+                    try {
+                        $computerAccountName = $computerAccountSidObject.Translate([System.Security.Principal.NTAccount]).Value
+                        $separatorIndex = $computerAccountName.IndexOf('\')
+                        if ($separatorIndex -gt 0) { $domainNetbiosName = $computerAccountName.Substring(0, $separatorIndex) }
+                    }
+                    catch { $errors += "identity: DomainNetbiosName: $($_.Exception.GetBaseException().Message)" }
+                }
+            }
+        }
         #endregion
         #endregion
 
@@ -554,6 +612,10 @@ function Get-SecEditWorker {
             CollectedUtc           = $collectedUtc
             ComputerId             = $computerId
             MachineGuid            = $machineGuid
+            MachineSid             = $machineSid
+            DomainSid              = $domainSid
+            ComputerAccountSid     = $computerAccountSid
+            DomainNetbiosName      = $domainNetbiosName
             SecEditPath            = $SecEditPath
             SecEditVersion         = $secEditVersion
             AccountCount           = [int]$accountCount

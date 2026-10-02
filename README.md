@@ -22,6 +22,20 @@ Collects the raw output of `secedit /export`, plain and `/mergedpolicy`, from lo
 
 ## Version Changes
 
+##### 1.6.0
+
+- The worker reads four SID reference values and `system.json` carries them directly after
+  `MachineGuid`: `MachineSid` (the SID of the computer's own account database, without the RID),
+  `DomainSid`, `ComputerAccountSid` (the full SID of the computer's own domain account) and
+  `DomainNetbiosName`. They say whose an `S-1-5-21` SID is; none is used as identity.
+- New `-SkipSidReference` switch leaves the four values unread (null in `system.json`), for a
+  caller that runs several collectors against the same computers and needs the reference from one
+  of them only, as RemoteBaseline does. `run.json` gains `SkipSidReference` directly after `UseSSL`.
+- `MachineSid` is null on a domain controller. The three domain values are null on a workgroup
+  computer. A domain-joined computer that cannot resolve its own account gets
+  `identity: DomainSid: <message>` in `Errors` and a `Partial` row.
+- Output convention 1.3: `run.json` `SchemaVersion` is now `1.3`.
+
 ##### 1.5.0
 
 - Every error message and every csv cell is one line: the worker and the collecting computer
@@ -219,8 +233,9 @@ What the output contains:
 - `accounts.csv` and `accounts.json`: every account and group named in the user rights, with
   their SIDs and names.
 - `results.csv`, `run.json`, `summary.json` and each computer's `system.json`: the computers
-  collected, their names, domain, OS build, hardware UUID (`ComputerId`) and `MachineGuid`, and
-  the result and errors of each.
+  collected, their names, domain, OS build, hardware UUID (`ComputerId`), `MachineGuid` and the
+  SID reference (`MachineSid`, `DomainSid`, `ComputerAccountSid`, `DomainNetbiosName`), and the
+  result and errors of each.
 
 Nothing is redacted. secedit exports policy, not credentials: no password or password hash is in
 these files.
@@ -347,6 +362,16 @@ The list of the functions contained in this module.
     -OutputPath together with the identity of the computer and every error seen on the way. A
     separate project analyses the files.
 
+    The identity also carries four SID reference values, MachineSid, DomainSid,
+    ComputerAccountSid and DomainNetbiosName, that say whose an S-1-5-21 SID is. MachineSid is
+    the SID of the computer's own account database, read as the local account with RID 500
+    through CIM (Win32_UserAccount filtered on the computer's own name), with the RID removed.
+    The three domain values come from the computer's own domain account, through the same
+    account lookup the module uses for the account table, and are read only on a
+    domain-joined computer. No Active Directory module and no LDAP is used. A domain
+    controller has no MachineSid, so it stays null without an error. The domain values are
+    null on a workgroup computer.
+
     Every computer carries a ComputerId (Win32_ComputerSystemProduct.UUID, upper case, $null
     when the target was never reached) alongside its ComputerName, so a computer that was
     renamed or moved between domains still joins across runs. The output layout, key order and
@@ -399,6 +424,13 @@ The list of the functions contained in this module.
 
 .PARAMETER ThrottleLimit
     Passed to Invoke-Command for remote targets. From 1 to 256. Defaults to 32.
+
+.PARAMETER SkipSidReference
+    Leaves the SID reference unread: MachineSid, DomainSid, ComputerAccountSid and
+    DomainNetbiosName are null in system.json, and run.json records SkipSidReference true.
+    Meant for a caller that runs several collectors against the same computers and needs the
+    reference from one of them only, as RemoteBaseline does. Without the switch every run
+    reads it.
 
 .EXAMPLE
     PS C:\> Get-SecEditExport -OutputPath C:\SecEditRuns
@@ -488,6 +520,16 @@ checks each export's basic structure, resolves the account table, and returns ev
 object. It never throws, every step records its own error and moves on. The collecting computer
 reads its own `ComputerId` the same way, once, for `run.json`.
 
+The worker also reads four SID reference values, with two reads and nothing else. `MachineSid` is
+the local account with RID 500, read through CIM (`Win32_UserAccount` filtered on the computer's own
+name, so only the local accounts come back), with the RID removed; `Win32_UserAccount` lists no local
+account on a domain controller, so it is null there. `DomainSid`, `ComputerAccountSid` and `DomainNetbiosName`
+come from the computer's own domain account through the same account lookup used for the account
+table, and only on a domain-joined computer; they are null on a workgroup computer. A domain-joined
+computer that cannot resolve its own account gets `identity: DomainSid: <message>` in `Errors` and a
+`Partial` row. No Active Directory module and no LDAP is used. `-SkipSidReference` leaves all four
+null with no error.
+
 After both exports, the worker reads every token in `[Privilege Rights]` across both files
 (`*S-1-...` and a bare local name such as `Guest`) and resolves each one once, never once per
 line. A token that starts with `*` is a SID and is translated to its account name, and every
@@ -507,10 +549,11 @@ Each run creates one new, timestamped folder under `-OutputPath`:
 
 ```
 C:\SecEditRuns\RemoteSecEdit-<run timestamp>Z\
-    run.json                       summary of the whole run
+    run.json                       summary of the whole run, including SkipSidReference
     results.csv                    one row per computer, opens in Excel
     <COMPUTER>_<build>_<timestamp>Z\   one folder per computer actually reached
-        system.json
+        system.json                      identity, with MachineSid, DomainSid, ComputerAccountSid
+                                          and DomainNetbiosName after MachineGuid
         secedit-export.inf / .log
         secedit-export.scesrv.log        only when %windir%\security\logs\scesrv.log was present
         secedit-export.stdout.txt        only when secedit wrote something to stdout

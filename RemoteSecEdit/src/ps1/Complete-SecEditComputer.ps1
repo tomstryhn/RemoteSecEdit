@@ -2,7 +2,7 @@
 
 .DESCRIPTION Turns one worker object into a result row, and writes its per-computer folder
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID e34d428f-462e-4cc0-9375-831779f907d5
 
@@ -253,7 +253,8 @@ function Complete-SecEditComputer {
             $systemObject = [ordered]@{}
             $identityPropertyOrder = @('ComputerName', 'DnsHostName', 'Domain', 'OSCaption', 'OSVersion', 'CurrentBuild', 'UBR',
                 'DisplayVersion', 'EditionID', 'InstallationType', 'Culture', 'TimeZoneId', 'PSVersion', 'CollectedBy',
-                'PartOfDomain', 'IsElevated', 'DomainRole', 'CollectedUtc', 'ComputerId', 'MachineGuid')
+                'PartOfDomain', 'IsElevated', 'DomainRole', 'CollectedUtc', 'ComputerId', 'MachineGuid',
+                'MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')
             foreach ($name in $identityPropertyOrder) {
                 $systemObject[$name] = Get-SecEditSafeProperty -InputObject $WorkerObject -Name $name -Default $null
             }

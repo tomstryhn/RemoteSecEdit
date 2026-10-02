@@ -2,7 +2,7 @@
 
 .DESCRIPTION Runs the worker on one or more remote computers with a single Invoke-Command call
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID fc12b7fd-c52e-4d1d-8a73-42c678611f7a
 
@@ -53,6 +53,11 @@ function Invoke-SecEditRemote {
         Forwarded to Invoke-Command as UseSSL when set. Omitted entirely, not passed as
         $false, when the caller does not supply it.
 
+    .PARAMETER SkipSidReference
+        Handed to the worker as its first and only argument, a bool, with or without the switch,
+        so the positional ArgumentList always has exactly one element. Leaves the SID reference
+        unread on every target.
+
     .NOTES
         FUNCTION: Invoke-SecEditRemote
         AUTHOR:   Tom Stryhn
@@ -78,7 +83,9 @@ function Invoke-SecEditRemote {
         [Parameter(Mandatory = $true)]
         [scriptblock]$OnResult,
 
-        [switch]$UseSSL
+        [switch]$UseSSL,
+
+        [switch]$SkipSidReference
     )
 
     $invokeParams = @{
@@ -90,6 +97,8 @@ function Invoke-SecEditRemote {
     }
     if ($Credential) { $invokeParams['Credential'] = $Credential }
     if ($UseSSL) { $invokeParams['UseSSL'] = $true }
+    # Always passed, a real bool, because the worker's first parameter is SkipSidReference and the remote call binds it by position.
+    $invokeParams['ArgumentList'] = @([bool]$SkipSidReference)
 
     $remoteErrors = $null
     Invoke-Command @invokeParams | ForEach-Object { & $OnResult $_ }

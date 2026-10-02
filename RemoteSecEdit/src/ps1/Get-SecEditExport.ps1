@@ -2,7 +2,7 @@
 
 .DESCRIPTION Collects the raw output of secedit /export from local or remote computers
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID df376487-b2c6-4a18-8655-83863c04981b
 
@@ -33,6 +33,16 @@ function Get-SecEditExport {
         together. The raw inf and log bytes are written to a per-computer folder under
         -OutputPath together with the identity of the computer and every error seen on the way. A
         separate project analyses the files.
+
+        The identity also carries four SID reference values, MachineSid, DomainSid,
+        ComputerAccountSid and DomainNetbiosName, that say whose an S-1-5-21 SID is. MachineSid is
+        the SID of the computer's own account database, read as the local account with RID 500
+        through CIM (Win32_UserAccount filtered on the computer's own name), with the RID removed.
+        The three domain values come from the computer's own domain account, through the same
+        account lookup the module uses for the account table, and are read only on a
+        domain-joined computer. No Active Directory module and no LDAP is used. A domain
+        controller has no MachineSid, so it stays null without an error. The domain values are
+        null on a workgroup computer.
 
         Every computer carries a ComputerId (Win32_ComputerSystemProduct.UUID, upper case, $null
         when the target was never reached) alongside its ComputerName, so a computer that was
@@ -86,6 +96,13 @@ function Get-SecEditExport {
 
     .PARAMETER ThrottleLimit
         Passed to Invoke-Command for remote targets. From 1 to 256. Defaults to 32.
+
+    .PARAMETER SkipSidReference
+        Leaves the SID reference unread: MachineSid, DomainSid, ComputerAccountSid and
+        DomainNetbiosName are null in system.json, and run.json records SkipSidReference true.
+        Meant for a caller that runs several collectors against the same computers and needs the
+        reference from one of them only, as RemoteBaseline does. Without the switch every run
+        reads it.
 
     .EXAMPLE
         PS C:\> Get-SecEditExport -OutputPath C:\SecEditRuns
@@ -172,7 +189,9 @@ function Get-SecEditExport {
         [string]$OutputPath,
 
         [ValidateRange(1, 256)]
-        [int]$ThrottleLimit = 32
+        [int]$ThrottleLimit = 32,
+
+        [switch]$SkipSidReference
     )
 
     begin {
@@ -228,7 +247,7 @@ function Get-SecEditExport {
             $localWorkerObject = $null
             $localExtraErrors = @()
             try {
-                $localWorkerObject = Invoke-SecEditLocal
+                $localWorkerObject = Invoke-SecEditLocal -SkipSidReference:$SkipSidReference
             } catch {
                 $localExtraErrors += $_.Exception.Message
             }
@@ -286,7 +305,7 @@ function Get-SecEditExport {
             $remoteResult = $null
             $remoteCallError = $null
             try {
-                $remoteResult = Invoke-SecEditRemote -ComputerName $remoteNames -Credential $Credential -ThrottleLimit $ThrottleLimit -OnResult $onRemoteResult -UseSSL:$UseSSL
+                $remoteResult = Invoke-SecEditRemote -ComputerName $remoteNames -Credential $Credential -ThrottleLimit $ThrottleLimit -OnResult $onRemoteResult -UseSSL:$UseSSL -SkipSidReference:$SkipSidReference
             } catch {
                 $remoteCallError = $_.Exception.Message
             }
@@ -346,7 +365,7 @@ function Get-SecEditExport {
             RunId              = Split-Path -Path $runFolder -Leaf
             Collector          = 'RemoteSecEdit'
             CollectorVersion   = $MyInvocation.MyCommand.Module.Version.ToString()
-            SchemaVersion      = '1.2'
+            SchemaVersion      = '1.3'
             HostComputer       = $env:COMPUTERNAME
             HostComputerId     = Get-SecEditHostComputerId
             HostUser           = "$env:USERDOMAIN\$env:USERNAME"
@@ -356,6 +375,7 @@ function Get-SecEditExport {
             RequestedComputers = @($resolvedNames)
             ThrottleLimit      = $ThrottleLimit
             UseSSL             = [bool]$UseSSL
+            SkipSidReference   = [bool]$SkipSidReference
             Results            = @($rows)
         }
 

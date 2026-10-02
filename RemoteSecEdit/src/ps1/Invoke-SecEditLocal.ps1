@@ -2,7 +2,7 @@
 
 .DESCRIPTION Runs the worker in-process on the local computer
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID 031722ea-3ffc-4ee3-87b0-105a72af5da7
 
@@ -26,9 +26,13 @@ function Invoke-SecEditLocal {
 
     .DESCRIPTION
         Kept as its own function, separate from the worker scriptblock, so tests can mock the
-        local call without touching the real secedit.exe. Takes no parameters and has no logic of
-        its own beyond the call, which is deliberate: every local alias in the same
-        Get-SecEditExport call shares this one run instead of each alias triggering its own.
+        local call without touching the real secedit.exe. Has no logic of its own beyond the call,
+        which is deliberate: every local alias in the same Get-SecEditExport call shares this one
+        run instead of each alias triggering its own.
+
+    .PARAMETER SkipSidReference
+        Passed to the worker as a bool. Leaves the SID reference unread: MachineSid, DomainSid,
+        ComputerAccountSid and DomainNetbiosName come back null.
 
     .NOTES
         FUNCTION: Invoke-SecEditLocal
@@ -42,7 +46,9 @@ function Invoke-SecEditLocal {
         System.Management.Automation.PSObject
     #>
 
-    param()
+    param(
+        [switch]$SkipSidReference
+    )
 
-    return & (Get-SecEditWorker)
+    return & (Get-SecEditWorker) -SkipSidReference ([bool]$SkipSidReference)
 }

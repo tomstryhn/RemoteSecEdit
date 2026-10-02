@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 .GUID 1fd3e34a-d1e2-4c44-82d1-055d28abbe2c
 .AUTHOR Tom Stryhn
 .COMPANYNAME Tom Stryhn
@@ -18,8 +18,9 @@ scriptblock against four stub secedit executables, the ComputerId and MachineGui
 local name detection, local alias folder sharing, relative OutputPath resolution, the public
 function against a mocked remote transport, credential forwarding to Invoke-Command, the account
 table resolved from [Privilege Rights], run.json, system.json, results.csv and accounts.csv key
-order, summary.json as one object, Write-SecEditCsvFile, parameter validation, and the module
-manifest. Every path is derived from $PSScriptRoot, so the suite still passes from a relocated
+order, summary.json as one object, the SID reference (worker reads, the switch through the local,
+remote and public layers, system.json and run.json), Write-SecEditCsvFile, parameter validation,
+and the module manifest. Every path is derived from $PSScriptRoot, so the suite still passes from a relocated
 copy of the repository. The ok stub names the built-in guest account by its English name, Guest,
 so the account assertions expect a host where that account has not been renamed by policy or
 localised.
@@ -138,6 +139,10 @@ BeforeAll {
             CollectedUtc           = '2026-09-25T00:00:00Z'
             ComputerId             = $ComputerIdValue
             MachineGuid            = $MachineGuidValue
+            MachineSid             = 'S-1-5-21-1111111111-2222222222-3333333333'
+            DomainSid              = $null
+            ComputerAccountSid     = $null
+            DomainNetbiosName      = $null
             SecEditPath            = 'C:\Windows\System32\secedit.exe'
             SecEditVersion         = '10.0.20348.1'
             AccountCount           = $accounts.Count
@@ -165,7 +170,7 @@ Describe 'Worker scriptblock' {
     It 'runs both exports for the ok stub: valid, sha256 matches, sections listed, errors empty, work folder removed' {
         $tempBefore = @(Get-ChildItem -Path $env:TEMP -Directory -Filter 'RemoteSecEdit-*' -ErrorAction SilentlyContinue)
 
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         $result.Errors.Count | Should -Be 0
         $result.Exports.Count | Should -Be 2
@@ -183,7 +188,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'reads ComputerId upper case and MachineGuid as a GUID string on the test host' {
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         $result.ComputerId | Should -Not -BeNullOrEmpty
         $result.ComputerId | Should -Be $result.ComputerId.ToUpperInvariant()
@@ -192,7 +197,7 @@ Describe 'Worker scriptblock' {
 
     It 'reports the workgroup-style merged export as valid with SettingLineCount 0 while the plain export stays fully valid' {
         # On a workgroup machine /mergedpolicy exits 0 and writes a small file holding only [Unicode], [Version] and [Profile Description]. This is a legitimate zero, not a validation failure.
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         $exportExp = $result.Exports | Where-Object { $_.Mode -eq 'export' }
         $mergedExp = $result.Exports | Where-Object { $_.Mode -eq 'mergedpolicy' }
@@ -206,7 +211,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'reports exit 740, no inf, Valid false, and the 740 error for the 740 stub' {
-        $result = & $script:Worker -SecEditPath $script:Stub740
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:Stub740
 
         foreach ($exp in $result.Exports) {
             $exp.ExitCode | Should -Be 740
@@ -217,7 +222,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'collapses the embedded stdout whitespace (double space and line break) in the exit-code error for the 740 stub' {
-        $result = & $script:Worker -SecEditPath $script:Stub740
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:Stub740
 
         $exitErrors = @($result.Errors | Where-Object { $_ -match 'secedit export exit 740:.*sufficient permissions' })
         $exitErrors.Count | Should -Be 1
@@ -227,7 +232,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'reports exit 0, no inf, Valid false with the message naming the file for the empty stub' {
-        $result = & $script:Worker -SecEditPath $script:StubEmpty
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:StubEmpty
 
         foreach ($exp in $result.Exports) {
             $exp.ExitCode | Should -Be 0
@@ -238,7 +243,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'reports exit code null and an error naming the path for a non-existent secedit path' {
-        $result = & $script:Worker -SecEditPath $script:StubMissing
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:StubMissing
 
         foreach ($exp in $result.Exports) {
             $exp.ExitCode | Should -BeNullOrEmpty
@@ -247,7 +252,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'appends a validation-failure error naming the mode when an export is invalid' {
-        $result = & $script:Worker -SecEditPath $script:StubEmpty
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:StubEmpty
 
         $joined = $result.Errors -join ' ; '
         $joined | Should -Match 'export invalid:'
@@ -255,7 +260,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'resolves every account referenced in [Privilege Rights] for the ok stub, in both directions, sorted ordinal by token' {
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         $result.Errors.Count | Should -Be 0
         $result.AccountCount | Should -Be 5
@@ -302,7 +307,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'counts a token referenced by both exports once per referencing line for the merged stub' {
-        $result = & $script:Worker -SecEditPath $script:StubMerged
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:StubMerged
 
         $sid544 = $result.Accounts | Where-Object { $_.Token -eq '*S-1-5-32-544' }
         @($sid544.References) | Should -Contain 'export:SeNetworkLogonRight'
@@ -322,7 +327,7 @@ Describe 'Worker scriptblock' {
             Mock -ModuleName RemoteSecEdit -CommandName Get-WmiObject -MockWith { throw 'Get-WmiObject must not be called' }
         }
 
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         @($result.Errors) | Should -Contain 'Get-CimInstance failed: simulated CIM failure'
         @($result.Errors) | Should -Contain 'identity: ComputerId: simulated CIM failure'
@@ -341,7 +346,7 @@ Describe 'Worker scriptblock' {
     }
 
     It 'reads CollectedBy and IsElevated from the one WindowsIdentity of the process, with no collected-by error' {
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
@@ -352,7 +357,7 @@ Describe 'Worker scriptblock' {
 
     It 'gives an empty Accounts and both counts 0, with no accounts: error, for the 740 stub and for a missing path' {
         foreach ($path in @($script:Stub740, $script:StubMissing)) {
-            $result = & $script:Worker -SecEditPath $path
+            $result = & $script:Worker -SkipSidReference $true -SecEditPath $path
 
             @($result.Accounts).Count | Should -Be 0
             $result.AccountCount | Should -Be 0
@@ -371,14 +376,14 @@ Describe 'Worker scriptblock' {
             throw 'simulated failure in the export step'
         }
 
-        { & $script:Worker -SecEditPath $script:OkStub } | Should -Throw -ExpectedMessage '*simulated failure in the export step*'
+        { & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub } | Should -Throw -ExpectedMessage '*simulated failure in the export step*'
 
         $probe.ExistedAtThrow | Should -BeTrue -Because 'the folder must exist at the moment of the throw, or this test proves nothing'
         (Test-Path -LiteralPath $probe.WorkFolder) | Should -BeFalse
     }
 
     It 'reports InfSha256 as the lower case SHA-256 Get-FileHash gives for the bytes it returns' {
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         foreach ($exp in $result.Exports) {
             $file = Join-Path -Path $TestDrive -ChildPath ($exp.Mode + '.inf')
@@ -393,7 +398,7 @@ Describe 'Worker scriptblock' {
             export       = '7cdfc49465f152e9841133667ba13aa9e22c0d398b50640c887a6eb0bb3b94d9'
             mergedpolicy = '3bfc9069d23b83a74d17298296904cafe1ebca91548c88d4db1d509f34d6ae56'
         }
-        $result = & $script:Worker -SecEditPath $script:OkStub
+        $result = & $script:Worker -SkipSidReference $true -SecEditPath $script:OkStub
 
         @($result.Exports).Count | Should -Be 2
         foreach ($exp in $result.Exports) {
@@ -408,10 +413,10 @@ Describe 'Worker scriptblock - the script text' {
         $script:WorkerBlock = & (Get-Module RemoteSecEdit) { Get-SecEditWorker }
     }
 
-    # The name differs from the RemoteFirewall suite's: this worker takes one parameter, -SecEditPath, so the check is that it takes that one and nothing else.
-    It 'is a scriptblock whose only parameter is SecEditPath and that switches strict mode off as its first statement' {
+    # The name differs from the RemoteFirewall suite's: this worker takes two parameters, SkipSidReference first (the remote call passes it positionally) and then SecEditPath, so the check is that it takes those two in that order and nothing else.
+    It 'is a scriptblock whose parameters are SkipSidReference then SecEditPath and that switches strict mode off as its first statement' {
         $script:WorkerBlock | Should -BeOfType [scriptblock]
-        @($script:WorkerBlock.Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) | Should -Be @('SecEditPath')
+        @($script:WorkerBlock.Ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) | Should -Be @('SkipSidReference', 'SecEditPath')
         $firstStatement = $script:WorkerBlock.Ast.EndBlock.Statements[0]
         $firstStatement.Extent.Text | Should -Be 'Set-StrictMode -Off'
     }
@@ -432,6 +437,283 @@ Describe 'Worker scriptblock - the script text' {
         $allowed = @('New-Item', 'Remove-Item', 'Set-StrictMode', 'New-Object')
         $changing = @($commandNames | Where-Object { ($_ -match '^(Set|New|Remove|Add|Clear|Stop|Start|Restart|Disable|Enable|Update|Write)-' -or $_ -eq 'Invoke-Expression') -and $_ -notin $definedInside -and $_ -notin $allowed })
         $changing.Count | Should -Be 0 -Because "changing cmdlets found: $($changing -join ', ')"
+    }
+}
+
+Describe 'Worker scriptblock - SID reference' {
+    BeforeEach {
+        # Pester 6.1.0 throws for a call that matches none of the filtered mocks, so every class a test does not mock itself goes to the real cmdlet through this default mock.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -MockWith { CimCmdlets\Get-CimInstance @PesterBoundParameters }
+    }
+
+    BeforeAll {
+        $script:SidWorker = & (Get-Module RemoteSecEdit) { Get-SecEditWorker }
+        # The machine SID the mocked local accounts below carry; the mock bodies repeat it as a literal because a mock body does not see this scope.
+        $script:ExpectedMachineSid = 'S-1-5-21-1111111111-2222222222-3333333333'
+    }
+
+    It 'T1: with SkipSidReference true gives the four properties as null, no identity line for them, and never queries Win32_UserAccount' {
+        # Win32_UserAccount throws if it is reached, and Win32_ComputerSystem claims a domain that does not exist, so a missing guard shows both as error lines.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -MockWith { throw 'Win32_UserAccount must not be queried' }
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'nosuchdomain.invalid'; PartOfDomain = $true; DomainRole = 1 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $true -SecEditPath $script:OkStub
+
+        foreach ($name in @('MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')) {
+            $result.PSObject.Properties[$name] | Should -Not -BeNullOrEmpty -Because "$name must exist on the object"
+            $result.$name | Should -BeNull
+        }
+        @($result.Errors | Where-Object { $_ -like 'identity: MachineSid*' -or $_ -like 'identity: DomainSid*' -or $_ -like 'identity: DomainNetbiosName*' }).Count | Should -Be 0
+        @($result.Errors).Count | Should -Be 0 -Because 'every other class reached the real cmdlet through the default mock'
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -Times 0 -Exactly -Scope It
+    }
+
+    It 'T2: takes the prefix of the -500 row, whatever the order of the rows, and filters on the computer name as the domain' {
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -MockWith {
+            [pscustomobject]@{ Name = 'Guest'; SID = 'S-1-5-21-1111111111-2222222222-3333333333-501' }
+            [pscustomobject]@{ Name = 'someone'; SID = 'S-1-5-21-1111111111-2222222222-3333333333-1001' }
+            [pscustomobject]@{ Name = 'Renamed'; SID = 'S-1-5-21-1111111111-2222222222-3333333333-500' }
+        }
+        # A workgroup computer, so the test does not depend on the domain state of the build host.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'WORKGROUP'; PartOfDomain = $false; DomainRole = 0 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        $result.MachineSid | Should -BeExactly $script:ExpectedMachineSid
+        @($result.Errors).Count | Should -Be 0
+        $expectedFilter = 'Domain = "{0}"' -f $env:COMPUTERNAME
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' -and $Filter -ceq $expectedFilter } -Times 1 -Exactly -Scope It
+    }
+
+    It 'T3: gives MachineSid null and no error line when Win32_UserAccount returns nothing' {
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -MockWith { }
+        # A workgroup computer, so the test does not depend on the domain state of the build host.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'WORKGROUP'; PartOfDomain = $false; DomainRole = 0 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        $result.MachineSid | Should -BeNull
+        @($result.Errors | Where-Object { $_ -like 'identity: MachineSid*' }).Count | Should -Be 0
+        @($result.Errors).Count | Should -Be 0
+    }
+
+    It 'T4: gives MachineSid null and exactly one identity: MachineSid line when Win32_UserAccount throws' {
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -MockWith { throw 'simulated account query failure' }
+        # A workgroup computer, so the test does not depend on the domain state of the build host.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'WORKGROUP'; PartOfDomain = $false; DomainRole = 0 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        $result.MachineSid | Should -BeNull
+        $lines = @($result.Errors | Where-Object { $_ -like 'identity: MachineSid: *' })
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Be 'identity: MachineSid: simulated account query failure'
+    }
+
+    It 'T5: gives the three domain values null and no identity: DomainSid line when PartOfDomain is false' {
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'WORKGROUP'; PartOfDomain = $false; DomainRole = 0 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        $result.DomainSid | Should -BeNull
+        $result.ComputerAccountSid | Should -BeNull
+        $result.DomainNetbiosName | Should -BeNull
+        @($result.Errors | Where-Object { $_ -like 'identity: DomainSid*' }).Count | Should -Be 0
+        @($result.Errors).Count | Should -Be 0
+    }
+
+    It 'T6: gives the three domain values null, exactly one identity: DomainSid line and no DomainNetbiosName line for a domain that does not exist, and keeps MachineSid' {
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'nosuchdomain.invalid'; PartOfDomain = $true; DomainRole = 1 }
+        }
+
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        $result.DomainSid | Should -BeNull
+        $result.ComputerAccountSid | Should -BeNull
+        $result.DomainNetbiosName | Should -BeNull
+        @($result.Errors | Where-Object { $_ -like 'identity: DomainSid: *' }).Count | Should -Be 1
+        @($result.Errors | Where-Object { $_ -like 'identity: DomainNetbiosName*' }).Count | Should -Be 0
+        $result.MachineSid | Should -Match '^S-1-5-21-\d+-\d+-\d+$'
+    }
+
+    It 'T7: returns the four properties directly after MachineGuid, in order' {
+        $result = & $script:SidWorker -SkipSidReference $true -SecEditPath $script:OkStub
+
+        $names = @($result.PSObject.Properties.Name)
+        $guidIndex = [array]::IndexOf($names, 'MachineGuid')
+        $guidIndex | Should -BeGreaterThan -1
+        @($names[($guidIndex + 1)..($guidIndex + 4)]) | Should -Be @('MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')
+        $names[$guidIndex + 5] | Should -Be 'SecEditPath'
+    }
+
+    It 'T12: reads the SID reference of this host from the real CIM provider, and expects no domain values and no identity: DomainSid line only when the host is not domain-joined' {
+        # The one test of the suite that reads this host without the switch and without mocking Win32_ComputerSystem. A domain-joined build host without a reachable domain controller gets an identity: DomainSid line, which is real behaviour and not a failure, so the domain assertions run only on a host that is not domain-joined.
+        $result = & $script:SidWorker -SkipSidReference $false -SecEditPath $script:OkStub
+
+        if ($result.DomainRole -ge 4) {
+            $result.MachineSid | Should -BeNull
+        } else {
+            $result.MachineSid | Should -Match '^S-1-5-21-\d+-\d+-\d+$'
+        }
+        if (-not $result.PartOfDomain) {
+            $result.DomainSid | Should -BeNull
+            $result.ComputerAccountSid | Should -BeNull
+            $result.DomainNetbiosName | Should -BeNull
+            @($result.Errors | Where-Object { $_ -like 'identity: DomainSid*' }).Count | Should -Be 0
+        }
+    }
+}
+
+Describe 'Invoke-SecEditRemote and Invoke-SecEditLocal - SkipSidReference' {
+    BeforeEach {
+        # The default mock for every class a test does not mock itself, see the SID reference worker tests.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -MockWith { CimCmdlets\Get-CimInstance @PesterBoundParameters }
+    }
+
+    It 'T8: hands Invoke-Command an ArgumentList of exactly one element, the bool false by default' {
+        InModuleScope RemoteSecEdit {
+            Mock Invoke-Command -MockWith { return @() }
+
+            $null = Invoke-SecEditRemote -ComputerName @('remote1') -ThrottleLimit 4 -OnResult {}
+
+            Should -Invoke Invoke-Command -Exactly -Times 1 -ParameterFilter {
+                @($ArgumentList).Count -eq 1 -and $ArgumentList[0] -is [bool] -and $ArgumentList[0] -eq $false
+            }
+        }
+    }
+
+    It 'T8: hands Invoke-Command an ArgumentList of exactly one element, the bool true with the switch' {
+        InModuleScope RemoteSecEdit {
+            Mock Invoke-Command -MockWith { return @() }
+
+            $null = Invoke-SecEditRemote -ComputerName @('remote1') -ThrottleLimit 4 -OnResult {} -SkipSidReference
+
+            Should -Invoke Invoke-Command -Exactly -Times 1 -ParameterFilter {
+                @($ArgumentList).Count -eq 1 -and $ArgumentList[0] -is [bool] -and $ArgumentList[0] -eq $true
+            }
+        }
+    }
+
+    It 'T9: passes the value to the worker by name as a bool: the returned MachineSid is set by default and null with the switch' {
+        # The worker is swapped for a wrapper that runs the real one against the ok stub, so no real secedit.exe runs. The wrapper is built from text inside the module, so it resolves commands there and the Get-CimInstance mock reaches it; a closure does not see the test's variables from a mock body.
+        $realWorker = & $script:Module { Get-SecEditWorker }
+        $wrapperText = 'param([bool]$SkipSidReference = $false) $realWorkerBlock = { ' + $realWorker.ToString() + ' }; & $realWorkerBlock -SkipSidReference $SkipSidReference -SecEditPath ''' + $script:OkStub.Replace("'", "''") + ''''
+        $wrapper = & $script:Module { param($text) [scriptblock]::Create($text) } $wrapperText
+        Mock -ModuleName RemoteSecEdit -CommandName Get-SecEditWorker -MockWith { $wrapper }
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_UserAccount' } -MockWith {
+            [pscustomobject]@{ Name = 'Renamed'; SID = 'S-1-5-21-1111111111-2222222222-3333333333-500' }
+        }
+        # A workgroup computer, so the test does not depend on the domain state of the build host.
+        Mock -ModuleName RemoteSecEdit -CommandName Get-CimInstance -ParameterFilter { $ClassName -eq 'Win32_ComputerSystem' } -MockWith {
+            [pscustomobject]@{ DNSHostName = 'fakehost'; Domain = 'WORKGROUP'; PartOfDomain = $false; DomainRole = 0 }
+        }
+
+        $withoutSwitch = InModuleScope RemoteSecEdit { Invoke-SecEditLocal }
+        $withSwitch = InModuleScope RemoteSecEdit { Invoke-SecEditLocal -SkipSidReference }
+
+        $withoutSwitch.MachineSid | Should -BeExactly 'S-1-5-21-1111111111-2222222222-3333333333'
+        $withSwitch.MachineSid | Should -BeNull
+    }
+}
+
+Describe 'Get-SecEditExport - SkipSidReference' {
+    It 'T10: forwards the switch to the local path and records SkipSidReference directly after UseSSL in run.json, SchemaVersion 1.3' {
+        Mock -ModuleName RemoteSecEdit -CommandName Invoke-SecEditLocal -MockWith {
+            Get-FakeWorkerObject -ComputerName $env:COMPUTERNAME
+        }
+
+        foreach ($state in @($false, $true)) {
+            $outPath = Join-Path -Path $TestDrive -ChildPath ([guid]::NewGuid().ToString('N'))
+            if ($state) {
+                $rows = @(Get-SecEditExport -ComputerName 'localhost' -OutputPath $outPath -SkipSidReference)
+            } else {
+                $rows = @(Get-SecEditExport -ComputerName 'localhost' -OutputPath $outPath)
+            }
+            $rows.Count | Should -Be 1
+
+            $runFolder = Split-Path -Path $rows[0].OutputFolder -Parent
+            $runJson = Get-Content -LiteralPath (Join-Path -Path $runFolder -ChildPath 'run.json') -Raw | ConvertFrom-Json
+            $runNames = @($runJson.PSObject.Properties.Name)
+            $runNames[[array]::IndexOf($runNames, 'UseSSL') + 1] | Should -Be 'SkipSidReference'
+            $runJson.SkipSidReference | Should -Be $state
+            $runJson.SchemaVersion | Should -Be '1.3'
+        }
+
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Invoke-SecEditLocal -Exactly -Times 1 -Scope It -ParameterFilter { $SkipSidReference -eq $true }
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Invoke-SecEditLocal -Exactly -Times 1 -Scope It -ParameterFilter { $SkipSidReference -eq $false }
+    }
+
+    It 'T10: forwards the switch to the remote path, both states' {
+        $targetName = 'remote1'
+        $goodWorker = Get-FakeWorkerObject -ComputerName $script:FixtureNameOne -PSComputerNameValue $targetName
+        Mock -ModuleName RemoteSecEdit -CommandName Invoke-SecEditRemote -MockWith {
+            & $OnResult $goodWorker
+            [pscustomobject]@{ Errors = @() }
+        }
+
+        $outPath = Join-Path -Path $TestDrive -ChildPath ([guid]::NewGuid().ToString('N'))
+        $null = @(Get-SecEditExport -ComputerName $targetName -OutputPath $outPath)
+        $null = @(Get-SecEditExport -ComputerName $targetName -OutputPath $outPath -SkipSidReference)
+
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Invoke-SecEditRemote -Exactly -Times 1 -Scope It -ParameterFilter { $SkipSidReference -eq $true }
+        Should -Invoke -ModuleName RemoteSecEdit -CommandName Invoke-SecEditRemote -Exactly -Times 1 -Scope It -ParameterFilter { $SkipSidReference -eq $false }
+    }
+}
+
+Describe 'Complete-SecEditComputer - SID reference in system.json' {
+    BeforeAll {
+        function Get-SecEditSystemJson {
+            param($WorkerObject)
+            $runFolder = Join-Path -Path $TestDrive -ChildPath ([guid]::NewGuid().ToString('N'))
+            New-Item -Path $runFolder -ItemType Directory -Force | Out-Null
+            $row = InModuleScope RemoteSecEdit -Parameters @{ Worker = $WorkerObject; RunFolder = $runFolder } {
+                param($Worker, $RunFolder)
+                Complete-SecEditComputer -RequestedComputerName 'remote1' -Transport 'WinRM' -RunFolder $RunFolder -WorkerObject $Worker -ExtraErrors @()
+            }
+            return (Get-Content -LiteralPath (Join-Path -Path $row.OutputFolder -ChildPath 'system.json') -Raw | ConvertFrom-Json)
+        }
+    }
+
+    It 'T11: writes the four keys directly after MachineGuid with the worker values' {
+        $workerObject = Get-FakeWorkerObject -ComputerName $script:FixtureNameOne -PSComputerNameValue 'remote1'
+        $workerObject.MachineSid = 'S-1-5-21-1111111111-2222222222-3333333333'
+        $workerObject.DomainSid = 'S-1-5-21-4444444444-5555555555-6666666666'
+        $workerObject.ComputerAccountSid = 'S-1-5-21-4444444444-5555555555-6666666666-1104'
+        $workerObject.DomainNetbiosName = 'CONTOSO'
+
+        $systemJson = Get-SecEditSystemJson -WorkerObject $workerObject
+
+        $names = @($systemJson.PSObject.Properties.Name)
+        $guidIndex = [array]::IndexOf($names, 'MachineGuid')
+        @($names[($guidIndex + 1)..($guidIndex + 4)]) | Should -Be @('MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')
+        $systemJson.MachineSid | Should -Be 'S-1-5-21-1111111111-2222222222-3333333333'
+        $systemJson.DomainSid | Should -Be 'S-1-5-21-4444444444-5555555555-6666666666'
+        $systemJson.ComputerAccountSid | Should -Be 'S-1-5-21-4444444444-5555555555-6666666666-1104'
+        $systemJson.DomainNetbiosName | Should -Be 'CONTOSO'
+    }
+
+    It 'T11: writes the four keys as null for a worker object that lacks them' {
+        $workerObject = Get-FakeWorkerObject -ComputerName $script:FixtureNameOne -PSComputerNameValue 'remote1' | Select-Object -Property * -ExcludeProperty MachineSid, DomainSid, ComputerAccountSid, DomainNetbiosName
+
+        $systemJson = Get-SecEditSystemJson -WorkerObject $workerObject
+
+        $names = @($systemJson.PSObject.Properties.Name)
+        $guidIndex = [array]::IndexOf($names, 'MachineGuid')
+        @($names[($guidIndex + 1)..($guidIndex + 4)]) | Should -Be @('MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')
+        foreach ($name in @('MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName')) {
+            $systemJson.$name | Should -BeNull
+        }
     }
 }
 
@@ -678,10 +960,10 @@ Describe 'Get-SecEditExport - remote, Invoke-SecEditRemote mocked' {
         $runJson.RequestedComputers.Count | Should -Be 2
         $runJson.Results.Count | Should -Be 2
 
-        $expectedRunKeys = @('RunId', 'Collector', 'CollectorVersion', 'SchemaVersion', 'HostComputer', 'HostComputerId', 'HostUser', 'PSVersion', 'StartUtc', 'EndUtc', 'RequestedComputers', 'ThrottleLimit', 'UseSSL', 'Results')
+        $expectedRunKeys = @('RunId', 'Collector', 'CollectorVersion', 'SchemaVersion', 'HostComputer', 'HostComputerId', 'HostUser', 'PSVersion', 'StartUtc', 'EndUtc', 'RequestedComputers', 'ThrottleLimit', 'UseSSL', 'SkipSidReference', 'Results')
         @($runJson.PSObject.Properties.Name) | Should -Be $expectedRunKeys
         $runJson.Collector | Should -Be 'RemoteSecEdit'
-        $runJson.SchemaVersion | Should -Be '1.2'
+        $runJson.SchemaVersion | Should -Be '1.3'
         $runJson.UseSSL | Should -Be $false
 
         $csvHeaderLine = (Get-Content -LiteralPath (Join-Path -Path $runFolder[0].FullName -ChildPath 'results.csv'))[0]
@@ -695,7 +977,7 @@ Describe 'Get-SecEditExport - remote, Invoke-SecEditRemote mocked' {
         ($csv[0].PSObject.Properties.Name) | Should -Contain 'MergedPolicySettingLines'
 
         $systemJson = Get-Content -LiteralPath (Join-Path -Path $row1.OutputFolder -ChildPath 'system.json') -Raw | ConvertFrom-Json
-        $expectedSystemKeys = @('ComputerName', 'DnsHostName', 'Domain', 'OSCaption', 'OSVersion', 'CurrentBuild', 'UBR', 'DisplayVersion', 'EditionID', 'InstallationType', 'Culture', 'TimeZoneId', 'PSVersion', 'CollectedBy', 'PartOfDomain', 'IsElevated', 'DomainRole', 'CollectedUtc', 'ComputerId', 'MachineGuid', 'Collector', 'CollectorVersion', 'RunId', 'SecEditPath', 'SecEditVersion', 'AccountCount', 'AccountUnresolvedCount', 'AccountsDurationMs', 'Errors', 'Transport', 'RequestedComputerName', 'Status')
+        $expectedSystemKeys = @('ComputerName', 'DnsHostName', 'Domain', 'OSCaption', 'OSVersion', 'CurrentBuild', 'UBR', 'DisplayVersion', 'EditionID', 'InstallationType', 'Culture', 'TimeZoneId', 'PSVersion', 'CollectedBy', 'PartOfDomain', 'IsElevated', 'DomainRole', 'CollectedUtc', 'ComputerId', 'MachineGuid', 'MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName', 'Collector', 'CollectorVersion', 'RunId', 'SecEditPath', 'SecEditVersion', 'AccountCount', 'AccountUnresolvedCount', 'AccountsDurationMs', 'Errors', 'Transport', 'RequestedComputerName', 'Status')
         @($systemJson.PSObject.Properties.Name) | Should -Be $expectedSystemKeys
         $systemJson.Collector | Should -Be 'RemoteSecEdit'
         $systemJson.RunId | Should -Be $runJson.RunId
@@ -1186,6 +1468,7 @@ Describe 'Complete-SecEditComputer - system.json from a fixed property list' {
         $script:ExpectedSystemKeys = @('ComputerName', 'DnsHostName', 'Domain', 'OSCaption', 'OSVersion', 'CurrentBuild', 'UBR',
             'DisplayVersion', 'EditionID', 'InstallationType', 'Culture', 'TimeZoneId', 'PSVersion', 'CollectedBy',
             'PartOfDomain', 'IsElevated', 'DomainRole', 'CollectedUtc', 'ComputerId', 'MachineGuid',
+            'MachineSid', 'DomainSid', 'ComputerAccountSid', 'DomainNetbiosName',
             'Collector', 'CollectorVersion', 'RunId',
             'SecEditPath', 'SecEditVersion', 'AccountCount', 'AccountUnresolvedCount', 'AccountsDurationMs',
             'Errors', 'Transport', 'RequestedComputerName', 'Status')

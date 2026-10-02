@@ -2,7 +2,7 @@
 
 .DESCRIPTION Builds one RemoteSecEdit.Result row
 
-.VERSION 1.5.0
+.VERSION 1.6.0
 
 .GUID 5fa5a49f-df88-412b-bfc1-d7d3e8e3f451
 
